@@ -1,0 +1,218 @@
+// --- ĐOẠN CODE GỐC CỦA BẠN BẠN (Được tích hợp trọn vẹn vào hệ thống) ---
+public interface IMemReader
+{
+    bool Read(ulong addr, Span<byte> dst);
+}
+
+public static class Analyzer
+{
+    public static (byte[] bytes, bool[] mask) ParsePattern(string pat)
+    {
+        var tok = pat.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var b = new byte[tok.Length];
+        var m = new bool[tok.Length];
+        for (int i = 0; i < tok.Length; i++)
+        {
+            if (tok[i] == "??" || tok[i] == "?") { m[i] = false; continue; }
+            b[i] = Convert.ToByte(tok[i], 16);
+            m[i] = true;
+        }
+        return (b, m);
+    }
+
+    public static List<int> AobScan(ReadOnlySpan<byte> data, string pattern)
+    {
+        var (pb, pm) = ParsePattern(pattern);
+        var hits = new List<int>();
+        for (int i = 0; i <= data.Length - pb.Length; i++)
+        {
+            bool ok = true;
+            for (int j = 0; j < pb.Length; j++)
+                if (pm[j] && data[i + j] != pb[j]) { ok = false; break; }
+            if (ok) hits.Add(i);
+        }
+        return hits;
+    }
+
+    public static bool TryResolveChain(IMemReader mem, ulong baseAddr, ReadOnlySpan<long> offsets, out ulong result)
+    {
+        result = 0;
+        ulong cur = baseAddr;
+        Span<byte> buf = stackalloc byte[8];
+        for (int i = 0; i < offsets.Length; i++)
+        {
+            ulong addr = (ulong)((long)cur + offsets[i]);
+            if (i == offsets.Length - 1) { result = addr; return true; }
+            if (!mem.Read(addr, buf)) return false;
+            cur = BitConverter.ToUInt64(buf);
+            if (cur == 0) return false;
+        }
+        result = cur;
+        return true;
+    }
+
+    public static bool ReadVec3(IMemReader mem, ulong addr, out (float x, float y, float z) v)
+    {
+        Span<byte> b = stackalloc byte[12];
+        v = default;
+        if (!mem.Read(addr, b)) return false;
+        v = (BitConverter.ToSingle(b[0..4]), BitConverter.ToSingle(b[4..8]), BitConverter.ToSingle(b[8..12]));
+        return true;
+    }
+
+    public static bool WorldToScreen(float[] m, (float x, float y, float z) p, float sw, float sh, out (float x, float y) s)
+    {
+        s = default;
+        float w = m[12] * p.x + m[13] * p.y + m[14] * p.z + m[15];
+        if (w < 0.001f) return false;
+        float cx = m[0] * p.x + m[1] * p.y + m[2] * p.z + m[3];
+        float cy = m[4] * p.x + m[5] * p.y + m[6] * p.z + m[7];
+        s = (sw / 2f * (1f + cx / w), sh / 2f * (1f - cy / w));
+        return true;
+    }
+}
+
+public static class AnalyzerExtensions
+{
+    public static bool ReadMatrix(IMemReader mem, ulong addr, out float[] matrix)
+    {
+        matrix = new float[16];
+        Span<byte> buf = stackalloc byte[64];
+        if (!mem.Read(addr, buf)) return false;
+        for (int i = 0; i < 16; i++)
+        {
+            matrix[i] = BitConverter.ToSingle(buf.Slice(i * 4, 4));
+        }
+        return true;
+    }
+
+    public static List<ulong> GetValidEntities(IMemReader mem, ulong entityListBase, int maxEntities)
+    {
+        var validEntities = new List<ulong>();
+        Span<byte> buf = stackalloc byte[8];
+        for (int i = 0; i < maxEntities; i++)
+        {
+            ulong entryAddr = entityListBase + (ulong)(i * 8);
+            if (!mem.Read(entryAddr, buf)) continue;
+            ulong entityPtr = BitConverter.ToUInt64(buf);
+            if (entityPtr != 0 && entityPtr > 0x1000000000UL)
+            {
+                validEntities.Add(entityPtr);
+            }
+        }
+        return validEntities;
+    }
+}
+Thứ hai 
+#include <pthread.h>
+#include <android/log.h>
+#include <EGL/egl.h>
+#include <GLES3/gl3.h>
+#include <unistd.h>
+#include <vector>
+#include "imgui.h"
+#include "imgui_impl_opengl3.h"
+
+#define LOG_TAG "IntegratedSystem"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+
+// Biến chia sẻ trạng thái tọa độ thực thể giữa Luồng phân tích và Luồng đồ họa
+struct EntityData {
+    float screenX;
+    float screenY;
+    bool isValid;
+};
+std::vector<EntityData> g_RenderEntities;
+pthread_mutex_t g_Mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// --- TẦNG 3: LUỒNG NỀN THỰC THI LOGIC PHÂN TÍCH (Tương đương logic C#) ---
+void* BackgroundAnalysisWorker(void* arg) {
+    LOGI("Background analysis worker started.");
+    
+    while (true) {
+        // 1. Tại đây thực hiện gọi các tiến trình đọc bộ nhớ (AOB Scan, Pointer Chasing, WorldToScreen)
+        // tương tự các phương thức Analyzer.TryResolveChain và Analyzer.WorldToScreen của bạn bạn.
+        
+        std::vector<EntityData> tempEntities;
+        
+        // [Giả lập cập nhật tọa độ sau khi tính toán hình học]
+        // ...
+        
+        // Đẩy dữ liệu an toàn sang luồng đồ họa qua Mutex
+        pthread_mutex_lock(&g_Mutex);
+        g_RenderEntities = tempEntities;
+        pthread_mutex_unlock(&g_Mutex);
+
+        usleep(16000); // Tần suất quét ~60 FPS
+    }
+    return nullptr;
+}
+
+// Hàm khởi tạo tự động khi file .so được nạp vào tiến trình
+__attribute__((constructor)) void SystemEntry() {
+    LOGI("Library successfully injected via Root/KernelSU.");
+    pthread_t workerThread;
+    pthread_create(&workerThread, nullptr, BackgroundAnalysisWorker, nullptr);
+    pthread_detach(workerThread);
+}
+
+// --- TẦNG 4: MÓC NỐI ĐƯỜNG ỐNG ĐỒ HỌA & KẾT XUẤT HUD (eglSwapBuffers Hook) ---
+typedef EGLBoolean (*orig_eglSwapBuffers)(EGLDisplay dpy, EGLSurface surface);
+orig_eglSwapBuffers original_eglSwapBuffers = nullptr;
+
+bool g_ImGuiInitialized = false;
+int g_WindowWidth = 0;
+int g_WindowHeight = 0;
+
+EGLBoolean hooked_eglSwapBuffers(EGLDisplay dpy, EGLSurface surface) {
+    // Lấy thông số độ phân giải màn hình thời gian thực
+    eglQuerySurface(dpy, surface, EGL_WIDTH, &g_WindowWidth);
+    eglQuerySurface(dpy, surface, EGL_HEIGHT, &g_WindowHeight);
+
+    // Khởi tạo ImGui ở frame đầu tiên
+    if (!g_ImGuiInitialized) {
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui_ImplOpenGL3_Init("#version 300 es");
+        ImGui::StyleColorsDark();
+        g_ImGuiInitialized = true;
+        LOGI("ImGui pipeline initialized. Dimensions: %dx%d", g_WindowWidth, g_WindowHeight);
+    }
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui::NewFrame();
+
+    // Thiết lập cửa sổ vẽ đè trong suốt toàn màn hình
+    ImGui::SetNextWindowSize(ImVec2((float)g_WindowWidth, (float)g_WindowHeight), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::Begin("HUD_Overlay_Layer", nullptr, 
+        ImGuiWindowFlags_NoBackground | 
+        ImGuiWindowFlags_NoDecoration | 
+        ImGuiWindowFlags_NoInputs | 
+        ImGuiWindowFlags_NoSavedSettings);
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+    // Lấy dữ liệu tọa độ đã được tính toán từ luồng phân tích ở trên để vẽ đè
+    pthread_mutex_lock(&g_Mutex);
+    for (const auto& entity : g_RenderEntities) {
+        if (entity.isValid) {
+            // Vẽ hộp hoặc thông tin vị trí dựa trên tọa độ 2D WorldToScreen đã giải mã
+            drawList->AddRect(
+                ImVec2(entity.screenX - 20, entity.screenY - 40), 
+                ImVec2(entity.screenX + 20, entity.screenY + 40), 
+                IM_COL32(0, 255, 0, 255), 1.0f
+            );
+        }
+    }
+    pthread_mutex_unlock(&g_Mutex);
+
+    ImGui::End();
+
+    // Kết xuất khung hình đồ họa của ImGui ra màn hình
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+    return original_eglSwapBuffers(dpy, surface);
+}
